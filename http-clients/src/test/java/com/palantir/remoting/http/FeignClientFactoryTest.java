@@ -20,6 +20,15 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertThat;
 
+import com.github.kristofa.brave.LoggingSpanCollector;
+import com.github.kristofa.brave.Sampler;
+import com.github.kristofa.brave.ServerRequestInterceptor;
+import com.github.kristofa.brave.ServerResponseInterceptor;
+import com.github.kristofa.brave.ServerTracer;
+import com.github.kristofa.brave.ThreadLocalServerClientAndLocalSpanState;
+import com.github.kristofa.brave.http.DefaultSpanNameProvider;
+import com.github.kristofa.brave.jaxrs2.BraveContainerRequestFilter;
+import com.github.kristofa.brave.jaxrs2.BraveContainerResponseFilter;
 import com.google.common.base.Optional;
 import com.palantir.remoting.ssl.SslConfiguration;
 import com.palantir.remoting.ssl.SslSocketFactories;
@@ -28,6 +37,7 @@ import io.dropwizard.Configuration;
 import io.dropwizard.setup.Environment;
 import io.dropwizard.testing.junit.DropwizardAppRule;
 import java.nio.file.Paths;
+import java.util.Random;
 import javax.net.ssl.SSLSocketFactory;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.GET;
@@ -59,20 +69,44 @@ public final class FeignClientFactoryTest {
 
     @Test
     public void testSslSocketFactory_canConnectWhenSocketFactoryIsSet() throws Exception {
+        TestEchoService service = createProxy();
+        assertThat(service.echo("foo"), is("foo"));
+    }
+
+    @Test
+    public void testBraveTracing() throws Exception {
+        TestEchoService service = createProxy();
+        service.echo("foo"); // TODO(rfink) This prints stuff to the log. Verify it actually does so.
+    }
+
+    private TestEchoService createProxy() {
         String endpointUri = "https://localhost:" + APP.getLocalPort();
         SslConfiguration sslConfig = SslConfiguration.of(Paths.get("src/test/resources/trustStore.jks"));
-        TestEchoService service = FeignClients.standard("test suite user agent")
+        return FeignClients.standard("test suite user agent")
                 .createProxy(
                         Optional.of(SslSocketFactories.createSslSocketFactory(sslConfig)),
                         endpointUri,
                         TestEchoService.class);
-        assertThat(service.echo("foo"), is("foo"));
     }
+
 
     public static final class TestEchoServer extends Application<Configuration> {
         @Override
         public void run(Configuration config, final Environment env) throws Exception {
             env.jersey().register(new TestEchoResource());
+            ServerTracer serverTracer = ServerTracer.builder()
+                    .traceSampler(Sampler.ALWAYS_SAMPLE)
+                    .randomGenerator(new Random())
+                    .state(new ThreadLocalServerClientAndLocalSpanState(0, 1, "server"))
+                    .spanCollector(new LoggingSpanCollector())
+                    .build();
+            env.jersey().register(new BraveContainerRequestFilter(
+                    new ServerRequestInterceptor(serverTracer),
+                    new DefaultSpanNameProvider()
+            ));
+            env.jersey().register(new BraveContainerResponseFilter(
+                    new ServerResponseInterceptor(serverTracer)
+            ));
         }
 
         public static final class TestEchoResource implements TestEchoService {
@@ -81,7 +115,6 @@ public final class FeignClientFactoryTest {
                 return value;
             }
         }
-
     }
 
     @Path("/")

@@ -16,6 +16,14 @@
 
 package com.palantir.remoting.http;
 
+import com.github.kristofa.brave.ClientRequestInterceptor;
+import com.github.kristofa.brave.ClientResponseInterceptor;
+import com.github.kristofa.brave.ClientTracer;
+import com.github.kristofa.brave.LoggingSpanCollector;
+import com.github.kristofa.brave.Sampler;
+import com.github.kristofa.brave.ThreadLocalServerClientAndLocalSpanState;
+import com.github.kristofa.brave.http.DefaultSpanNameProvider;
+import com.github.kristofa.brave.okhttp.BraveOkHttpRequestResponseInterceptor;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -38,6 +46,7 @@ import feign.slf4j.Slf4jLogger;
 import io.dropwizard.util.Duration;
 import java.util.Collection;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import javax.net.ssl.SSLSocketFactory;
 
@@ -216,6 +225,21 @@ public final class FeignClientFactory {
                     if (sslSocketFactory.isPresent()) {
                         client.sslSocketFactory(sslSocketFactory.get());
                     }
+
+                    // Set up Zipkin/Brave tracing
+                    ClientTracer tracer = ClientTracer.builder()
+                            .traceSampler(Sampler.ALWAYS_SAMPLE)
+                            .randomGenerator(new Random())
+                            .state(new ThreadLocalServerClientAndLocalSpanState(0, 2, "bogus")) // TODO(rfink)
+                            .spanCollector(new LoggingSpanCollector()) // TODO(rfink) where to collect?
+                            .build();
+                    BraveOkHttpRequestResponseInterceptor braveInterceptor =
+                            new BraveOkHttpRequestResponseInterceptor(
+                                    new ClientRequestInterceptor(tracer),
+                                    new ClientResponseInterceptor(tracer),
+                                    new DefaultSpanNameProvider());
+                    client.addInterceptor(braveInterceptor);
+
                     return new OkHttpClient(client.build());
                 }
             };
@@ -229,8 +253,8 @@ public final class FeignClientFactory {
             };
 
     /**
-     * Supplies a feign {@link Client} wrapping a {@link okhttp3.OkHttpClient} client with optionally
-     * specified {@link SSLSocketFactory}.
+     * Supplies a feign {@link Client} wrapping a {@link okhttp3.OkHttpClient} client with optionally specified {@link
+     * SSLSocketFactory}.
      */
     public static Function<Optional<SSLSocketFactory>, Client> okHttpClient() {
         return OKHTTP_CLIENT_SUPPLIER;
